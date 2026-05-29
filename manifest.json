@@ -1,6 +1,6 @@
 {
     "name": "SilentDelete",
-    "description": "Silently deletes a message to bypass message loggers.",
+    "description": "Silently deletes a message to bypass vencord message loggers.",
     "authors": [
         {
             "name": "snipermaster226",
