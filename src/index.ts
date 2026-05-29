@@ -28,6 +28,7 @@ async function silentDeleteMessage(channelId: string, messageId: string) {
         await RestAPI.del({ url: `/channels/${channelId}/messages/${response.body.id}` });
         await sleep(100);
         await RestAPI.del({ url: `/channels/${channelId}/messages/${messageId}` });
+        logger.log("[SilentDelete] Success!");
         return true;
     } catch (err) {
         console.error("[SilentDelete] Error:", err);
@@ -36,9 +37,17 @@ async function silentDeleteMessage(channelId: string, messageId: string) {
 }
 
 let patches: (() => void)[] = [];
+let isLoaded = false;
 
 export default {
     onLoad() {
+        // Prevent double-patching
+        if (isLoaded) {
+            logger.warn("[SilentDelete] Already loaded, skipping.");
+            return;
+        }
+        isLoaded = true;
+
         storage.replacementText ??= "** **";
         storage.deleteDelay ??= 200;
         storage.suppressNotifications ??= true;
@@ -53,17 +62,18 @@ export default {
             const channelId: string = args[0];
             const messageId: string = args[1];
             if (!channelId || !messageId) return;
-            // Don't call original — do silent delete instead
             silentDeleteMessage(channelId, messageId);
         });
 
         patches.push(unpatch);
-        logger.log("[SilentDelete] Loaded.");
+        logger.log("[SilentDelete] Loaded — deleteMessage patched.");
     },
 
     onUnload() {
         for (const unpatch of patches) unpatch();
         patches = [];
+        isLoaded = false;
+        logger.log("[SilentDelete] Unloaded.");
     },
 
     settings: Settings,
