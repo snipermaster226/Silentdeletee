@@ -1,1 +1,1 @@
-{"name":"SilentDelete","description":"Silently deletes a message to bypass message loggers.","authors":[{"name":"snipermaster226","id":"798441657895878696"}],"main":"index.js","vendetta":{"icon":"ic_trash_24px"},"hash":"479c4003f260ca76fb950f8c6420418dfdbfec9ab9e9d95729d06dd04bd6ee16"}
+{"name":"SilentDelete","description":"Silently deletes a message to bypass message loggers.","authors":[{"name":"snipermaster226","id":"798441657895878696"}],"main":"index.js","vendetta":{"icon":"ic_trash_24px"},"hash":"cb50fd8c4a6371bc47adcf87a4d4aa2c8445122ebd558b09bb77965a84cad072"}
