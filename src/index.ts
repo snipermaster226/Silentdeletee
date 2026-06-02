@@ -1,7 +1,8 @@
-import { findByProps } from "@vendetta/metro";
-import { instead } from "@vendetta/patcher";
+import { findByProps, findByName } from "@vendetta/metro";
+import { after } from "@vendetta/patcher";
 import { storage } from "@vendetta/plugin";
 import { logger } from "@vendetta";
+import { React } from "@vendetta/metro/common";
 import Settings from "./Settings";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -41,7 +42,6 @@ let isLoaded = false;
 
 export default {
     onLoad() {
-        // Prevent double-patching
         if (isLoaded) {
             logger.warn("[SilentDelete] Already loaded, skipping.");
             return;
@@ -52,31 +52,56 @@ export default {
         storage.deleteDelay ??= 200;
         storage.suppressNotifications ??= true;
 
-        const MessageActions = findByProps("deleteMessage", "sendMessage");
-        if (!MessageActions) {
-            logger.warn("[SilentDelete] MessageActions not found");
+        // Find the message long-press context menu
+        const MessageLongPressActionSheet = findByName("MessageLongPressActionSheet", false);
+        if (!MessageLongPressActionSheet) {
+            logger.warn("[SilentDelete] MessageLongPressActionSheet not found");
             return;
         }
 
-        const unpatch = instead("deleteMessage", MessageActions, (args: any[], orig: any) => {
-            const channelId: string = args[0];
-            const messageId: string = args[1];
-            const options: any = args[2];
+        const ButtonComponent = findByProps("TableRowIcon") ?? findByProps("Button");
+        console.log("[SilentDelete] ButtonComponent keys:", Object.keys(ButtonComponent ?? {}).join(", "));
 
-            // Ephemeral dismissals don't have a real messageId to delete — pass through
-            if (options?.isMention || options?.isEphemeral) {
-                return orig(...args);
+        const unpatch = after("default", MessageLongPressActionSheet, (args: any[], res: any) => {
+            const message = args[0]?.message;
+            if (!message) return res;
+
+            const UserStore = findByProps("getCurrentUser");
+            const currentUser = UserStore?.getCurrentUser();
+
+            // Only show button on our own messages
+            if (!currentUser || message.author?.id !== currentUser.id) return res;
+
+            const channelId: string = message.channel_id;
+            const messageId: string = message.id;
+
+            // Build the Silent Delete button
+            const silentDeleteButton = React.createElement(
+                ButtonComponent?.TableRowIcon ?? ButtonComponent?.Button,
+                {
+                    label: "Silent Delete",
+                    icon: findByProps("trash") ?? undefined,
+                    variant: "destructive",
+                    onPress: () => {
+                        silentDeleteMessage(channelId, messageId);
+                    },
+                }
+            );
+
+            // Append our button to the existing action sheet children
+            if (res?.props?.children) {
+                if (Array.isArray(res.props.children)) {
+                    res.props.children.push(silentDeleteButton);
+                } else {
+                    res.props.children = [res.props.children, silentDeleteButton];
+                }
             }
 
-            if (!channelId || !messageId) return orig(...args);
-
-            // Discord's UI only calls deleteMessage for the user's own messages,
-            // so anything reaching here is ours — silent delete it
-            silentDeleteMessage(channelId, messageId);
+            return res;
         });
 
         patches.push(unpatch);
-        logger.log("[SilentDelete] Loaded — deleteMessage patched.");
+        logger.log("[SilentDelete] Loaded — context menu button injected.");
     },
 
     onUnload() {
