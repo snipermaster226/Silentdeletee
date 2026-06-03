@@ -1,14 +1,17 @@
-import { findByProps, find } from "@vendetta/metro";
-import { after } from "@vendetta/patcher";
+import { findByProps } from "@vendetta/metro";
+import { before, after } from "@vendetta/patcher";
 import { storage } from "@vendetta/plugin";
 import { logger } from "@vendetta";
-import { React, ReactNative } from "@vendetta/metro/common";
+import { React } from "@vendetta/metro/common";
+import { findInReactTree } from "@vendetta/utils";
+import { getAssetIDByName } from "@vendetta/ui/assets";
 import Settings from "./Settings";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-const { Button } = findByProps("TableRow", "Button");
-const LazyActionSheet = findByProps("openLazy", "hideActionSheet");
+const ActionSheet = findByProps("openLazy", "hideActionSheet");
+const { ActionSheetRow } = findByProps("ActionSheetRow");
+const DeleteIcon = getAssetIDByName("ic_message_delete") ?? getAssetIDByName("trash") ?? getAssetIDByName("ic_trash");
 
 async function silentDeleteMessage(channelId: string, messageId: string) {
     const RestAPI = findByProps("get", "post", "del", "patch");
@@ -40,96 +43,84 @@ async function silentDeleteMessage(channelId: string, messageId: string) {
     }
 }
 
-let patches: (() => void)[] = [];
-let isLoaded = false;
-let sheetPatched = false; // guard — only patch the sheet component once
+let unpatchOpenLazy: (() => void) | null = null;
 
 export default {
     onLoad() {
-        if (isLoaded) return;
-        isLoaded = true;
-
         storage.replacementText ??= "** **";
         storage.deleteDelay ??= 200;
         storage.suppressNotifications ??= true;
 
-        const unpatch = after("openLazy", LazyActionSheet, (args: any[]) => {
-            const [component, key] = args;
-            if (key !== "MessageLongPressActionSheet") return;
-            if (sheetPatched) return; // already patched, don't stack
+        unpatchOpenLazy = before("openLazy", ActionSheet, ([comp, args, msg]) => {
+            if (args !== "MessageLongPressActionSheet" || !msg?.message) return;
 
-            component?.then?.((sheet: any) => {
-                if (sheetPatched) return;
-                sheetPatched = true;
+            const UserStore = findByProps("getCurrentUser");
+            const currentUser = UserStore?.getCurrentUser();
+            if (!currentUser || msg.message.author?.id !== currentUser.id) return;
 
-                const sheetModule = sheet?.default ? sheet : { default: sheet };
+            const channelId: string = msg.message.channel_id;
+            const messageId: string = msg.message.id;
 
-                const innerUnpatch = after("default", sheetModule, (innerArgs: any[], res: any) => {
-                    const message = innerArgs[0]?.message;
-                    if (!message) return res;
+            comp.then((instance: any) => {
+                const unpatch = after("default", instance, (_: any, component: any) => {
+                    // Self-cleaning patch — removed after sheet unmounts
+                    React.useEffect(() => () => { unpatch(); }, []);
 
-                    const UserStore = findByProps("getCurrentUser");
-                    const currentUser = UserStore?.getCurrentUser();
-                    if (!currentUser || message.author?.id !== currentUser.id) return res;
+                    // Find the button rows array the same way JumpTo does
+                    let buttons = findInReactTree(component, (c: any) =>
+                        c?.some?.((child: any) => child?.type?.name === "ActionSheetRow")
+                    );
 
-                    // Dump the res tree so we can find where the buttons live
-                    try {
-                        const summarize = (node: any, depth = 0): string => {
-                            if (depth > 4 || !node) return String(node);
-                            if (Array.isArray(node)) return `[Array(${node.length}): ${node.map(n => summarize(n, depth+1)).join(", ")}]`;
-                            if (typeof node === "object") {
-                                const type = node?.type?.name ?? node?.type?.displayName ?? node?.type ?? "?";
-                                const childCount = Array.isArray(node?.props?.children) ? node.props.children.length : (node?.props?.children ? 1 : 0);
-                                return `<${type} children=${childCount}>`;
-                            }
-                            return String(node);
-                        };
-                        logger.log("[SilentDelete] res: " + summarize(res));
-                    } catch(e) {
-                        logger.log("[SilentDelete] dump error: " + String(e));
-                    }
-
-                    const channelId: string = message.channel_id;
-                    const messageId: string = message.id;
-
-                    const silentBtn = React.createElement(Button, {
-                        color: Button.Colors?.RED ?? "red",
-                        text: "Silent Delete",
-                        size: Button.Sizes?.SMALL,
-                        onPress: () => {
-                            LazyActionSheet?.hideActionSheet();
-                            silentDeleteMessage(channelId, messageId);
-                        },
-                        style: { marginTop: ReactNative.Platform.select({ android: 12, default: 16 }) }
-                    });
-
-                    try {
-                        if (Array.isArray(res?.props?.children)) {
-                            res.props.children.push(silentBtn);
-                        } else if (res?.props?.children) {
-                            res.props.children = [res.props.children, silentBtn];
+                    if (!buttons?.length) {
+                        // Fallback: look inside ActionSheetRowGroups
+                        const groups = findInReactTree(component, (c: any) =>
+                            c?.[0]?.type?.name === "ActionSheetRowGroup"
+                        );
+                        if (groups?.length) {
+                            const targetGroup = groups[Math.min(1, groups.length - 1)];
+                            buttons = findInReactTree(targetGroup, (c: any) =>
+                                c?.some?.((child: any) => child?.type?.name === "ActionSheetRow")
+                            );
                         }
-                    } catch (e) {
-                        logger.log("[SilentDelete] Inject error: " + String(e));
                     }
 
-                    return res;
-                });
+                    if (!buttons?.length) {
+                        logger.warn("[SilentDelete] Could not find buttons array");
+                        return;
+                    }
 
-                patches.push(innerUnpatch);
-                logger.log("[SilentDelete] Sheet patched.");
+                    // Find the Delete Message button and insert Silent Delete right before it
+                    const deleteIndex = buttons.findIndex((c: any) =>
+                        c?.props?.message?.toLowerCase?.()?.includes?.("delete") ||
+                        c?.props?.label?.toLowerCase?.()?.includes?.("delete")
+                    );
+                    const insertAt = deleteIndex >= 0 ? deleteIndex : buttons.length;
+
+                    buttons.splice(insertAt, 0,
+                        <ActionSheetRow
+                            label="Silent Delete"
+                            icon={
+                                <ActionSheetRow.Icon
+                                    color="danger"
+                                    source={DeleteIcon}
+                                />
+                            }
+                            onPress={() => {
+                                ActionSheet.hideActionSheet();
+                                silentDeleteMessage(channelId, messageId);
+                            }}
+                        />
+                    );
+                });
             });
         });
 
-        patches.push(unpatch);
         logger.log("[SilentDelete] Loaded.");
     },
 
     onUnload() {
-        for (const unpatch of patches) unpatch();
-        patches = [];
-        isLoaded = false;
-        sheetPatched = false;
+        unpatchOpenLazy?.();
+        unpatchOpenLazy = null;
         logger.log("[SilentDelete] Unloaded.");
     },
 
