@@ -1,4 +1,4 @@
-import { findByProps, findByName } from "@vendetta/metro";
+import { findByProps, findByName, find } from "@vendetta/metro";
 import { after } from "@vendetta/patcher";
 import { storage } from "@vendetta/plugin";
 import { logger } from "@vendetta";
@@ -52,17 +52,65 @@ export default {
         storage.deleteDelay ??= 200;
         storage.suppressNotifications ??= true;
 
-        // Find the message long-press context menu
-        const MessageLongPressActionSheet = findByName("MessageLongPressActionSheet", false);
-        if (!MessageLongPressActionSheet) {
-            logger.warn("[SilentDelete] MessageLongPressActionSheet not found");
+        // Try all known names for the message context menu across Revenge/Vendetta builds
+        const candidateNames = [
+            "MessageLongPressActionSheet",
+            "MessageContextMenu",
+            "MessageContextMenuActionSheet",
+            "MessageMenu",
+            "LongPressActionSheet",
+            "MessageActionSheet",
+        ];
+
+        let menuModule: any = null;
+        let foundName = "";
+
+        for (const name of candidateNames) {
+            const mod = findByName(name, false);
+            if (mod) {
+                menuModule = mod;
+                foundName = name;
+                break;
+            }
+        }
+
+        // If named lookups all failed, scan every module for a message-related action sheet
+        if (!menuModule) {
+            menuModule = find((m: any) => {
+                const name: string = m?.default?.name ?? m?.name ?? "";
+                const lower = name.toLowerCase();
+                if (
+                    (lower.includes("message") && lower.includes("menu")) ||
+                    (lower.includes("message") && lower.includes("action")) ||
+                    (lower.includes("message") && lower.includes("longpress")) ||
+                    (lower.includes("message") && lower.includes("press"))
+                ) {
+                    foundName = name;
+                    return true;
+                }
+                return false;
+            });
+        }
+
+        if (!menuModule) {
+            // Dump all module names containing "message" so we can identify the right one
+            logger.warn("[SilentDelete] Could not find menu module. Dumping message-related modules:");
+            find((m: any) => {
+                const name: string = m?.default?.name ?? m?.name ?? "";
+                if (name.toLowerCase().includes("message")) {
+                    logger.log(`[SilentDelete] >> ${name}`);
+                }
+                return false;
+            });
             return;
         }
 
-        const ButtonComponent = findByProps("TableRowIcon") ?? findByProps("Button");
-        console.log("[SilentDelete] ButtonComponent keys:", Object.keys(ButtonComponent ?? {}).join(", "));
+        logger.log(`[SilentDelete] Using module: ${foundName}`);
 
-        const unpatch = after("default", MessageLongPressActionSheet, (args: any[], res: any) => {
+        const ButtonComponent = findByProps("TableRowIcon") ?? findByProps("Button");
+        logger.log("[SilentDelete] ButtonComponent keys: " + Object.keys(ButtonComponent ?? {}).join(", "));
+
+        const unpatch = after("default", menuModule, (args: any[], res: any) => {
             const message = args[0]?.message;
             if (!message) return res;
 
@@ -75,12 +123,10 @@ export default {
             const channelId: string = message.channel_id;
             const messageId: string = message.id;
 
-            // Build the Silent Delete button
             const silentDeleteButton = React.createElement(
                 ButtonComponent?.TableRowIcon ?? ButtonComponent?.Button,
                 {
                     label: "Silent Delete",
-                    icon: findByProps("trash") ?? undefined,
                     variant: "destructive",
                     onPress: () => {
                         silentDeleteMessage(channelId, messageId);
@@ -88,7 +134,6 @@ export default {
                 }
             );
 
-            // Append our button to the existing action sheet children
             if (res?.props?.children) {
                 if (Array.isArray(res.props.children)) {
                     res.props.children.push(silentDeleteButton);
