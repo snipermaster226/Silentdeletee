@@ -1,4 +1,4 @@
-import { findByProps, findByName, find } from "@vendetta/metro";
+import { findByProps, find } from "@vendetta/metro";
 import { after } from "@vendetta/patcher";
 import { storage } from "@vendetta/plugin";
 import { logger } from "@vendetta";
@@ -32,7 +32,7 @@ async function silentDeleteMessage(channelId: string, messageId: string) {
         logger.log("[SilentDelete] Success!");
         return true;
     } catch (err) {
-        console.error("[SilentDelete] Error:", err);
+        logger.log("[SilentDelete] Error: " + String(err));
         return false;
     }
 }
@@ -42,97 +42,72 @@ let isLoaded = false;
 
 export default {
     onLoad() {
-        if (isLoaded) {
-            logger.warn("[SilentDelete] Already loaded, skipping.");
-            return;
-        }
+        if (isLoaded) return;
         isLoaded = true;
 
         storage.replacementText ??= "** **";
         storage.deleteDelay ??= 200;
         storage.suppressNotifications ??= true;
 
-        // Try all known names for the message context menu across Revenge/Vendetta builds
-        const candidateNames = [
-            "MessageLongPressActionSheet",
-            "MessageContextMenu",
-            "MessageContextMenuActionSheet",
-            "MessageMenu",
-            "LongPressActionSheet",
-            "MessageActionSheet",
-        ];
+        // Find the message context menu by looking for a module that has
+        // a "deleteMessage" or "DELETE_MESSAGE" action — the real long press sheet
+        const MessageContextMenu = findByProps("useMessageLongPressActionSheet")
+            ?? findByProps("MessageContextMenu")
+            ?? findByProps("deleteMessage", "pinMessage")
+            ?? findByProps("deleteMessage", "editMessage");
 
-        let menuModule: any = null;
-        let foundName = "";
-
-        for (const name of candidateNames) {
-            const mod = findByName(name, false);
-            if (mod) {
-                menuModule = mod;
-                foundName = name;
-                break;
-            }
-        }
-
-        // If named lookups all failed, scan every module for a message-related action sheet
-        if (!menuModule) {
-            menuModule = find((m: any) => {
-                const name: string = m?.default?.name ?? m?.name ?? "";
-                const lower = name.toLowerCase();
-                if (
-                    (lower.includes("message") && lower.includes("menu")) ||
-                    (lower.includes("message") && lower.includes("action")) ||
-                    (lower.includes("message") && lower.includes("longpress")) ||
-                    (lower.includes("message") && lower.includes("press"))
-                ) {
-                    foundName = name;
-                    return true;
-                }
-                return false;
-            });
-        }
-
-        if (!menuModule) {
-            // Dump all module names containing "message" so we can identify the right one
-            logger.warn("[SilentDelete] Could not find menu module. Dumping message-related modules:");
+        if (!MessageContextMenu) {
+            logger.warn("[SilentDelete] Could not find MessageContextMenu by props. Dumping deleteMessage modules:");
             find((m: any) => {
-                const name: string = m?.default?.name ?? m?.name ?? "";
-                if (name.toLowerCase().includes("message")) {
-                    logger.log(`[SilentDelete] >> ${name}`);
-                }
+                try {
+                    if (m && typeof m === "object" && "deleteMessage" in m) {
+                        logger.log("[SilentDelete] >> keys: " + Object.keys(m).slice(0, 10).join(", "));
+                    }
+                } catch {}
                 return false;
             });
             return;
         }
 
-        logger.log(`[SilentDelete] Using module: ${foundName}`);
+        logger.log("[SilentDelete] Found MessageContextMenu keys: " + Object.keys(MessageContextMenu).join(", "));
 
-        const ButtonComponent = findByProps("TableRowIcon") ?? findByProps("Button");
-        logger.log("[SilentDelete] ButtonComponent keys: " + Object.keys(ButtonComponent ?? {}).join(", "));
+        // ModalActionButton is the correct button component from the keys dump
+        const { ModalActionButton } = findByProps("ModalActionButton");
 
-        const unpatch = after("default", menuModule, (args: any[], res: any) => {
-            const message = args[0]?.message;
+        if (!ModalActionButton) {
+            logger.warn("[SilentDelete] ModalActionButton not found");
+            return;
+        }
+
+        // Patch whichever key on the module is a function (the render fn)
+        const patchKey = Object.keys(MessageContextMenu).find(
+            k => typeof MessageContextMenu[k] === "function"
+        );
+
+        if (!patchKey) {
+            logger.warn("[SilentDelete] No patchable function found on MessageContextMenu");
+            return;
+        }
+
+        logger.log("[SilentDelete] Patching key: " + patchKey);
+
+        const unpatch = after(patchKey, MessageContextMenu, (args: any[], res: any) => {
+            const message = args[0]?.message ?? args[1]?.message;
             if (!message) return res;
 
             const UserStore = findByProps("getCurrentUser");
             const currentUser = UserStore?.getCurrentUser();
-
-            // Only show button on our own messages
             if (!currentUser || message.author?.id !== currentUser.id) return res;
 
             const channelId: string = message.channel_id;
             const messageId: string = message.id;
 
-            const silentDeleteButton = React.createElement(
-                ButtonComponent?.TableRowIcon ?? ButtonComponent?.Button,
-                {
-                    label: "Silent Delete",
-                    variant: "destructive",
-                    onPress: () => {
-                        silentDeleteMessage(channelId, messageId);
-                    },
-                }
-            );
+            const silentDeleteButton = React.createElement(ModalActionButton, {
+                text: "Silent Delete",
+                iconSource: findByProps("ic_trash")?.ic_trash ?? findByProps("trash")?.trash,
+                destructive: true,
+                onPress: () => silentDeleteMessage(channelId, messageId),
+            });
 
             if (res?.props?.children) {
                 if (Array.isArray(res.props.children)) {
@@ -146,7 +121,7 @@ export default {
         });
 
         patches.push(unpatch);
-        logger.log("[SilentDelete] Loaded — context menu button injected.");
+        logger.log("[SilentDelete] Loaded successfully.");
     },
 
     onUnload() {
