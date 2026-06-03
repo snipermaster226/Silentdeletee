@@ -2,7 +2,7 @@ import { findByProps } from "@vendetta/metro";
 import { before, after } from "@vendetta/patcher";
 import { storage } from "@vendetta/plugin";
 import { logger } from "@vendetta";
-import { React } from "@vendetta/metro/common";
+import { React, ReactNative as RN } from "@vendetta/metro/common";
 import { findInReactTree } from "@vendetta/utils";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import Settings from "./Settings";
@@ -11,7 +11,13 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const ActionSheet = findByProps("openLazy", "hideActionSheet");
 const { ActionSheetRow } = findByProps("ActionSheetRow");
-const DeleteIcon = getAssetIDByName("ic_message_delete") ?? getAssetIDByName("trash") ?? getAssetIDByName("ic_trash");
+
+// Try several icon names used across Discord versions for the delete/trash icon
+const DeleteIcon =
+    getAssetIDByName("ic_message_delete") ??
+    getAssetIDByName("TrashIcon") ??
+    getAssetIDByName("trash") ??
+    getAssetIDByName("ic_trash");
 
 async function silentDeleteMessage(channelId: string, messageId: string) {
     const RestAPI = findByProps("get", "post", "del", "patch");
@@ -89,25 +95,34 @@ export default {
                         return;
                     }
 
-                    // Find the Delete Message button and insert Silent Delete right after it
+                    // Find the Delete Message button and insert Silent Delete just ABOVE it
                     const deleteIndex = buttons.findIndex((c: any) =>
                         c?.props?.message?.toLowerCase?.()?.includes?.("delete") ||
                         c?.props?.label?.toLowerCase?.()?.includes?.("delete")
                     );
-                    const insertAt = deleteIndex >= 0 ? deleteIndex + 1 : buttons.length;
+                    const insertAt = deleteIndex >= 0 ? deleteIndex : buttons.length;
 
                     buttons.splice(insertAt, 0,
-                        React.createElement(ActionSheetRow, {
-                            label: "Silent Delete",
-                            destructive: true,
-                            icon: React.createElement(ActionSheetRow.Icon, {
-                                source: DeleteIcon,
-                            }),
-                            onPress: () => {
-                                ActionSheet.hideActionSheet();
-                                silentDeleteMessage(channelId, messageId);
-                            },
-                        })
+                        React.createElement(
+                            ActionSheetRow.Group,
+                            null,
+                            React.createElement(ActionSheetRow, {
+                                label: "Silent Delete",
+                                destructive: true,
+                                icon: (
+                                    <RN.View style={{ tintColor: "#ed4245" }}>
+                                        <ActionSheetRow.Icon
+                                            source={DeleteIcon}
+                                            color="#ed4245"
+                                        />
+                                    </RN.View>
+                                ),
+                                onPress: () => {
+                                    ActionSheet.hideActionSheet();
+                                    silentDeleteMessage(channelId, messageId);
+                                },
+                            })
+                        )
                     );
                 });
             });
