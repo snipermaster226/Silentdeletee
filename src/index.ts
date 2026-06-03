@@ -2,10 +2,16 @@ import { findByProps, find } from "@vendetta/metro";
 import { after } from "@vendetta/patcher";
 import { storage } from "@vendetta/plugin";
 import { logger } from "@vendetta";
-import { React } from "@vendetta/metro/common";
+import { React, ReactNative } from "@vendetta/metro/common";
 import Settings from "./Settings";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// Same pattern as Stealmoji — grab Button from here
+const { Button } = findByProps("TableRow", "Button");
+
+// LazyActionSheet is used to dismiss the sheet after pressing
+const LazyActionSheet = findByProps("openLazy", "hideActionSheet");
 
 async function silentDeleteMessage(channelId: string, messageId: string) {
     const RestAPI = findByProps("get", "post", "del", "patch");
@@ -49,79 +55,61 @@ export default {
         storage.deleteDelay ??= 200;
         storage.suppressNotifications ??= true;
 
-        // Find the actual context menu UI component — must have a `default` that is
-        // a React function/component, and the module key must suggest it's an action sheet
-        const menuModule = find((m: any) => {
-            try {
-                if (
-                    m &&
-                    typeof m.default === "function" &&
-                    m.default.name &&
-                    (
-                        m.default.name.toLowerCase().includes("longpress") ||
-                        m.default.name.toLowerCase().includes("actionsheet") ||
-                        m.default.name.toLowerCase().includes("contextmenu") ||
-                        m.default.name.toLowerCase().includes("messagemenu") ||
-                        m.default.name.toLowerCase().includes("messageaction")
-                    )
-                ) {
-                    logger.log("[SilentDelete] Candidate: " + m.default.name);
-                    return true;
-                }
-            } catch {}
-            return false;
-        });
+        // Find the message long-press action sheet the same way Stealmoji finds its emoji sheet:
+        // look for the module that opens it via openLazy, then patch the component it lazily loads
+        const ActionSheetManager = findByProps("openLazy", "hideActionSheet");
 
-        if (!menuModule) {
-            logger.warn("[SilentDelete] No menu module found. Dumping all default-exported React components with 'message' in name:");
-            find((m: any) => {
-                try {
-                    if (m && typeof m.default === "function" && m.default.name?.toLowerCase().includes("message")) {
-                        logger.log("[SilentDelete] >> " + m.default.name);
+        // Patch openLazy to intercept the message long press sheet
+        const unpatch = after("openLazy", ActionSheetManager, (args: any[]) => {
+            const [component, key] = args;
+            if (key !== "MessageLongPressActionSheet") return;
+
+            // Patch the lazily-loaded component
+            component?.then?.((sheet: any) => {
+                const sheetModule = sheet?.default ? sheet : { default: sheet };
+                const innerUnpatch = after("default", sheetModule, (innerArgs: any[], res: any) => {
+                    const message = innerArgs[0]?.message;
+                    if (!message) return res;
+
+                    const UserStore = findByProps("getCurrentUser");
+                    const currentUser = UserStore?.getCurrentUser();
+                    if (!currentUser || message.author?.id !== currentUser.id) return res;
+
+                    const channelId: string = message.channel_id;
+                    const messageId: string = message.id;
+
+                    // Append the Silent Delete button using the same Button pattern as Stealmoji
+                    const silentBtn = React.createElement(Button, {
+                        color: Button.Colors?.RED ?? "red",
+                        text: "Silent Delete",
+                        size: Button.Sizes?.SMALL,
+                        onPress: () => {
+                            LazyActionSheet?.hideActionSheet();
+                            silentDeleteMessage(channelId, messageId);
+                        },
+                        style: { marginTop: ReactNative.Platform.select({ android: 12, default: 16 }) }
+                    });
+
+                    try {
+                        if (Array.isArray(res?.props?.children)) {
+                            res.props.children.push(silentBtn);
+                        } else if (res?.props?.children) {
+                            res.props.children = [res.props.children, silentBtn];
+                        }
+                    } catch (e) {
+                        logger.log("[SilentDelete] Inject error: " + String(e));
                     }
-                } catch {}
-                return false;
+
+                    return res;
+                });
+
+                patches.push(innerUnpatch);
+                logger.log("[SilentDelete] Patched lazy sheet.");
             });
-            return;
-        }
-
-        logger.log("[SilentDelete] Using: " + menuModule.default.name);
-
-        const { ModalActionButton } = findByProps("ModalActionButton");
-
-        const unpatch = after("default", menuModule, (args: any[], res: any) => {
-            const props = args[0];
-            const message = props?.message ?? props?.targetMessage;
-            if (!message) return res;
-
-            const UserStore = findByProps("getCurrentUser");
-            const currentUser = UserStore?.getCurrentUser();
-            if (!currentUser || message.author?.id !== currentUser.id) return res;
-
-            const channelId: string = message.channel_id;
-            const messageId: string = message.id;
-
-            const btn = React.createElement(ModalActionButton, {
-                text: "Silent Delete",
-                destructive: true,
-                onPress: () => silentDeleteMessage(channelId, messageId),
-            });
-
-            try {
-                if (Array.isArray(res?.props?.children)) {
-                    res.props.children.push(btn);
-                } else if (res?.props?.children) {
-                    res.props.children = [res.props.children, btn];
-                }
-            } catch (e) {
-                logger.log("[SilentDelete] Failed to inject button: " + String(e));
-            }
-
-            return res;
         });
 
         patches.push(unpatch);
-        logger.log("[SilentDelete] Loaded successfully.");
+        logger.log("[SilentDelete] Loaded — watching for MessageLongPressActionSheet.");
     },
 
     onUnload() {
