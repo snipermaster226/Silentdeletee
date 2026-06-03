@@ -89,18 +89,18 @@ export default {
                         return;
                     }
 
-                    // Find the Delete Message button and insert Silent Delete right before it
+                    // Find the Delete Message button and insert Silent Delete right after it
                     const deleteIndex = buttons.findIndex((c: any) =>
                         c?.props?.message?.toLowerCase?.()?.includes?.("delete") ||
                         c?.props?.label?.toLowerCase?.()?.includes?.("delete")
                     );
-                    const insertAt = deleteIndex >= 0 ? deleteIndex : buttons.length;
+                    const insertAt = deleteIndex >= 0 ? deleteIndex + 1 : buttons.length;
 
                     buttons.splice(insertAt, 0,
                         React.createElement(ActionSheetRow, {
                             label: "Silent Delete",
+                            destructive: true,
                             icon: React.createElement(ActionSheetRow.Icon, {
-                                color: "danger",
                                 source: DeleteIcon,
                             }),
                             onPress: () => {
