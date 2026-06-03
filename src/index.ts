@@ -72,58 +72,61 @@ export default {
                     // Self-cleaning patch — removed after sheet unmounts
                     React.useEffect(() => () => { unpatch(); }, []);
 
-                    // Find the button rows array the same way JumpTo does
-                    let buttons = findInReactTree(component, (c: any) =>
-                        c?.some?.((child: any) => child?.type?.name === "ActionSheetRow")
+                    // Find all ActionSheetRowGroups — same pattern as JumpToTop reference
+                    const groups: any[] = findInReactTree(
+                        component,
+                        (c: any) => Array.isArray(c) && c[0]?.type?.name === "ActionSheetRowGroup"
                     );
 
-                    if (!buttons?.length) {
-                        // Fallback: look inside ActionSheetRowGroups
-                        const groups = findInReactTree(component, (c: any) =>
-                            c?.[0]?.type?.name === "ActionSheetRowGroup"
-                        );
-                        if (groups?.length) {
-                            const targetGroup = groups[Math.min(1, groups.length - 1)];
-                            buttons = findInReactTree(targetGroup, (c: any) =>
-                                c?.some?.((child: any) => child?.type?.name === "ActionSheetRow")
-                            );
-                        }
-                    }
-
-                    if (!buttons?.length) {
-                        logger.warn("[SilentDelete] Could not find buttons array");
+                    if (!groups?.length) {
+                        logger.warn("[SilentDelete] Could not find ActionSheetRowGroups");
                         return;
                     }
 
-                    // Find the Delete Message button and insert Silent Delete just ABOVE it
-                    const deleteIndex = buttons.findIndex((c: any) =>
-                        c?.props?.message?.toLowerCase?.()?.includes?.("delete") ||
-                        c?.props?.label?.toLowerCase?.()?.includes?.("delete")
-                    );
-                    const insertAt = deleteIndex >= 0 ? deleteIndex : buttons.length;
+                    const silentDeleteButton = React.createElement(ActionSheetRow, {
+                        label: "Silent Delete",
+                        destructive: true,
+                        icon: React.createElement(ActionSheetRow.Icon, {
+                            source: DeleteIcon,
+                            color: "#ed4245",
+                        }),
+                        onPress: () => {
+                            ActionSheet.hideActionSheet();
+                            silentDeleteMessage(channelId, messageId);
+                        },
+                    });
 
-                    buttons.splice(insertAt, 0,
-                        React.createElement(
-                            ActionSheetRow.Group,
-                            null,
-                            React.createElement(ActionSheetRow, {
-                                label: "Silent Delete",
-                                destructive: true,
-                                icon: React.createElement(
-                                    RN.View,
-                                    { style: { tintColor: "#ed4245" } },
-                                    React.createElement(ActionSheetRow.Icon, {
-                                        source: DeleteIcon,
-                                        color: "#ed4245",
-                                    })
-                                ),
-                                onPress: () => {
-                                    ActionSheet.hideActionSheet();
-                                    silentDeleteMessage(channelId, messageId);
-                                },
-                            })
-                        )
-                    );
+                    // Search every group for the Delete row; insert Silent Delete just above it
+                    let inserted = false;
+                    for (let gi = 0; gi < groups.length; gi++) {
+                        const groupChildren: any[] = findInReactTree(
+                            groups[gi],
+                            (c: any) => Array.isArray(c) && c.some((child: any) =>
+                                child?.type?.name === "ActionSheetRow"
+                            )
+                        );
+                        if (!groupChildren) continue;
+
+                        const deleteRowIndex = groupChildren.findIndex((c: any) =>
+                            c?.props?.label?.toLowerCase?.()?.includes?.("delete") ||
+                            c?.props?.message?.toLowerCase?.()?.includes?.("delete")
+                        );
+
+                        if (deleteRowIndex >= 0) {
+                            groupChildren.splice(deleteRowIndex, 0, silentDeleteButton);
+                            inserted = true;
+                            break;
+                        }
+                    }
+
+                    if (!inserted) {
+                        // Fallback: add as own group before the last group (where Delete usually lives)
+                        logger.warn("[SilentDelete] Delete row not found, inserting before last group");
+                        const insertAt = Math.max(0, groups.length - 1);
+                        groups.splice(insertAt, 0,
+                            React.createElement(ActionSheetRow.Group, null, silentDeleteButton)
+                        );
+                    }
                 });
             });
         });
